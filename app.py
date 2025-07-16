@@ -371,27 +371,52 @@ else:
     st.warning("Colunas 'meta_dias', 'data_realizada' ou 'cliente' ausentes para a tabela de status de visitas.")
 
 # --------------------------------------------------------
-# 8. Clientes da base dClientes que ainda não foram visitados
+# 8. Clientes da base dClientes que ainda não foram visitados (AGORA COM FILTRO DE RESPONSÁVEL)
 # --------------------------------------------------------
 
 st.header("Clientes Não Visitados (Base dClientes)")
 
-# Nota: Esta seção usa df_clientes_base (todos os clientes) e df_visitas_completas (todas as visitas)
-# para identificar clientes nunca visitados, independentemente dos filtros atuais.
-if 'cliente' in df_clientes_base.columns and 'cliente' in df_visitas_completas.columns:
-    
-    clientes_visitados = df_visitas_completas['cliente'].unique()
-    todos_clientes = df_clientes_base['cliente'].unique()
-    
-    clientes_nao_visitados = set(todos_clientes) - set(clientes_visitados)
-    
-    if clientes_nao_visitados:
-        df_nao_visitados = pd.DataFrame(list(clientes_nao_visitados), columns=['Cliente Não Visitado'])
-        
-        st.subheader(f"Total de Clientes Não Visitados: {len(df_nao_visitados)}")
+# Verifica se as colunas essenciais existem antes de prosseguir
+if 'cliente' in df_clientes_base.columns and \
+   'cliente' in df_visitas_completas.columns and \
+   'codigo_responsavel' in df_clientes_base.columns and \
+   'codigo_responsavel' in df_visitas_completas.columns: # Adicionado verificação para visitas também
+
+    # Filtra a base de clientes pelo responsável selecionado (se houver)
+    df_clientes_para_nao_visitados = df_clientes_base.copy()
+    if selected_responsavel_codigo:
+        df_clientes_para_nao_visitados = df_clientes_para_nao_visitados[
+            df_clientes_para_nao_visitados['codigo_responsavel'] == selected_responsavel_codigo
+        ]
+    todos_clientes_filtrados = df_clientes_para_nao_visitados['cliente'].unique()
+
+    # Filtra as visitas (completas) pelo responsável selecionado (se houver) para identificar quem FOI visitado
+    df_visitas_para_nao_visitados = df_visitas_completas.copy()
+    if selected_responsavel_codigo:
+        df_visitas_para_nao_visitados = df_visitas_para_nao_visitados[
+            df_visitas_para_nao_visitados['codigo_responsavel'] == selected_responsavel_codigo
+        ]
+    clientes_visitados_filtrados = df_visitas_para_nao_visitados['cliente'].unique()
+
+
+    # Calcula a diferença: clientes na base do responsável que não foram visitados por ele
+    clientes_nao_visitados_result = set(todos_clientes_filtrados) - set(clientes_visitados_filtrados)
+
+    if clientes_nao_visitados_result:
+        # Cria um DataFrame dos clientes não visitados
+        df_nao_visitados = pd.DataFrame(list(clientes_nao_visitados_result), columns=['Cliente Não Visitado'])
+
+        # Adiciona informações do responsável e código do cliente para contexto
+        df_nao_visitados = pd.merge(df_nao_visitados,
+                                    df_clientes_para_nao_visitados[['cliente', 'responsavel', 'codigo_responsavel', 'codigo_cliente']].drop_duplicates(),
+                                    left_on='Cliente Não Visitado',
+                                    right_on='cliente',
+                                    how='left').drop(columns='cliente')
+
+        st.subheader(f"Total de Clientes Não Visitados (para o Responsável selecionado): {len(df_nao_visitados)}")
         st.dataframe(df_nao_visitados, use_container_width=True)
     else:
-        st.info("Todos os clientes na base 'dClientes' já foram visitados.")
+        st.info("Todos os clientes para o Responsável selecionado já foram visitados.")
 
 else:
-    st.warning("Coluna 'cliente' ausente em uma das bases de dados para identificar clientes não visitados.")
+    st.warning("Colunas essenciais (cliente, codigo_responsavel) ausentes em uma das bases de dados para identificar clientes não visitados ou filtrar por responsável.")
