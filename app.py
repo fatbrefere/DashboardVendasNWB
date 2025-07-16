@@ -8,8 +8,8 @@ from datetime import date, timedelta
 st.set_page_config(layout="wide", page_title="Painel de Acompanhamento de Visitas NWB")
 
 # Definindo os caminhos dos arquivos (Mantenha esses caminhos conforme a sua máquina)
-PATH_CLIENTES = r"C:\Users\fatbr\Desktop\Estrutura Equipe NWB_2025\data\dClientes.xlsx"
-PATH_VISITAS = r"C:\Users\fatbr\Desktop\Estrutura Equipe NWB_2025\data\fVisitas.xlsx"
+PATH_CLIENTES = "dClientes.xlsx"
+PATH_VISITAS = "fVisitas.xlsx"
 
 # --- 1. Carregamento e Pré-processamento dos Dados ---
 
