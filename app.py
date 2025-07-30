@@ -1,422 +1,360 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import os
-from datetime import date, timedelta
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import numpy as np
+import os # Manter este import caso você precise do os.path futuramente para debug, mas não será usado no fluxo principal de upload
 
-# Configuração do Streamlit
-st.set_page_config(layout="wide", page_title="Painel de Acompanhamento de Visitas NWB")
+# --- Configurações da Página ---
+st.set_page_config(page_title="Dashboard de Visitas", layout='wide')
 
-# Definindo os caminhos dos arquivos (Mantenha esses caminhos conforme a sua máquina)
-PATH_CLIENTES = "dClientes.xlsx"
-PATH_VISITAS = "fVisitas.xlsx"
+st.title('🌱 Dashboard de Acompanhamento de Visitas a Clientes - Bayer')
 
-# --- 1. Carregamento e Pré-processamento dos Dados ---
+st.markdown("""
+Este dashboard tem como objetivo ajudar no acompanhamento das visitas dos agrônomos aos clientes,
+otimizando a **frequência de visitas** e **rotas**, com foco em melhorar a cobertura de clientes.
+""")
 
+# --- Função de Carregamento e Pré-processamento de Dados (Agora com cache!) ---
+# Esta função será executada apenas quando os arquivos forem carregados ou alterados.
 @st.cache_data
-def load_data():
+def process_uploaded_files(uploaded_file_visitas, uploaded_file_clientes):
     try:
-        # Verifica se os arquivos existem
-        if not os.path.exists(PATH_CLIENTES):
-            st.error(f"Arquivo não encontrado: {PATH_CLIENTES}")
-            return None, None
-        if not os.path.exists(PATH_VISITAS):
-            st.error(f"Arquivo não encontrado: {PATH_VISITAS}")
-            return None, None
-        
-        # Carrega os DataFrames
-        df_clientes = pd.read_excel(PATH_CLIENTES)
-        df_visitas = pd.read_excel(PATH_VISITAS)
+        # Carrega os DataFrames dos arquivos enviados
+        df_visitas = pd.read_excel(uploaded_file_visitas)
+        df_clientes = pd.read_excel(uploaded_file_clientes)
 
-        # Remove espaços extras e converte para minúsculas
-        df_clientes.columns = df_clientes.columns.str.strip().str.lower()
+        # Removendo espaços extras e convertendo para minúsculas os nomes das colunas
         df_visitas.columns = df_visitas.columns.str.strip().str.lower()
+        df_clientes.columns = df_clientes.columns.str.strip().str.lower()
 
         # Define as colunas de merge
         merge_cols = ['codigo_responsavel', 'responsavel', 'codigo_cliente', 'cliente']
 
         # Verifica colunas essenciais para o merge
-        if not all(col in df_clientes.columns for col in merge_cols) or \
-           not all(col in df_visitas.columns for col in merge_cols):
-            st.error("Colunas essenciais para o merge ausentes em uma das bases.")
-            return None, None
-
-        # Merge das bases
-        df_merged = pd.merge(df_visitas, df_clientes, 
-                             on=merge_cols, 
-                             how='left')
+        if not all(col in df_clientes.columns for col in merge_cols):
+            st.error(f"Erro: As colunas essenciais para o merge ({merge_cols}) não foram encontradas na base de Clientes.")
+            st.stop() # Interrompe a execução
         
+        if not all(col in df_visitas.columns for col in merge_cols):
+             st.error(f"Erro: As colunas essenciais para o merge ({merge_cols}) não foram encontradas na base de Visitas.")
+             st.stop() # Interrompe a execução
+
+        # Realiza o merge das bases
+        df_merged = pd.merge(df_visitas, df_clientes,
+                               on=merge_cols,
+                               how='left') # 'left' garante que todas as visitas são mantidas
+
         # Converte as colunas de data para datetime
         for col in ['data_realizada', 'data_planejada']:
             if col in df_merged.columns:
                 df_merged[col] = pd.to_datetime(df_merged[col], errors='coerce')
         
-        # Converte meta_dias para numérico (para o KPI 7)
+        # Converte meta_dias para numérico
         if 'meta_dias' in df_merged.columns:
             df_merged['meta_dias'] = pd.to_numeric(df_merged['meta_dias'], errors='coerce')
+        else:
+            # Não é um erro crítico, apenas um aviso
+            st.warning("Coluna 'meta_dias' não encontrada após o merge. KPIs dependentes podem não funcionar corretamente.")
 
-        return df_merged, df_clientes
+        return df_merged
 
     except Exception as e:
-        st.error(f"Erro ao carregar ou processar os dados: {e}")
-        st.exception(e)
-        return None, None
+        st.error(f"Erro ao carregar ou processar os dados. Verifique o formato dos arquivos e as colunas: {str(e)}")
+        st.exception(e) # Mostra o erro completo para debug
+        return pd.DataFrame() # Retorna um DataFrame vazio em caso de erro
 
-# Carrega os dados no início do script
-df_visitas_completas, df_clientes_base = load_data()
+# --- Seção de Carregamento de Arquivos na Interface ---
+st.subheader('📁 Carregamento das Bases de Dados')
 
-# Verifica se o carregamento foi bem-sucedido
-if df_visitas_completas is None or df_clientes_base is None:
+uploaded_file_visitas = st.file_uploader('⬆️ Faça o upload da base de **Visitas (fVisitas.xlsx)**', type=['xlsx', 'xls'], key="visitas_uploader")
+uploaded_file_clientes = st.file_uploader('⬆️ Faça o upload da base de **Clientes (dClientes.xlsx)**', type=['xlsx', 'xls'], key="clientes_uploader")
+
+# Verifica se ambos os arquivos foram carregados antes de processar
+if uploaded_file_visitas is None or uploaded_file_clientes is None:
+    st.info('⬆️ Por favor, faça o upload de ambos os arquivos Excel (`fVisitas.xlsx` e `dClientes.xlsx`) para começar a análise.')
+    
+    # Mostrar exemplo da estrutura esperada
+    st.subheader('📋 Estrutura de Dados Esperada')
+    st.markdown("""
+    **Base de Visitas (`fVisitas.xlsx`):**
+    - `codigo_responsavel`
+    - `responsavel`
+    - `codigo_cliente`
+    - `cliente`
+    - `data_realizada`
+    - `data_planejada`
+    - `status` (ex: 'Realizado', 'Planejado', 'Cancelado')
+    - `dias_sem` (Dias sem visita ao cliente)
+
+    **Base de Clientes (`dClientes.xlsx`):**
+    - `codigo_responsavel`
+    - `responsavel`
+    - `codigo_cliente`
+    - `cliente`
+    - `meta_dias` (Meta de dias entre visitas)
+    """)
+    st.stop() # Interrompe a execução do restante do script
+
+# Processa os arquivos usando a função cacheada
+df_filtered = process_uploaded_files(uploaded_file_visitas, uploaded_file_clientes)
+
+# Verifica se o processamento retornou um DataFrame válido
+if df_filtered.empty:
+    st.error("Não foi possível processar os dados. Verifique os uploads e o formato das colunas.")
     st.stop()
 
-# --- 2. Filtros e Selectboxes no Sidebar ---
+st.success('✅ Dados carregados e processados com sucesso!')
 
-st.sidebar.header("Filtros de Visitas")
+# --- Informações Básicas dos Dados ---
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Total de Registros (Após Merge)", len(df_filtered))
+with col2:
+    st.metric("Agrônomos Únicos", df_filtered['responsavel'].nunique() if 'responsavel' in df_filtered.columns else "N/A")
+with col3:
+    st.metric("Clientes Únicos", df_filtered['cliente'].nunique() if 'cliente' in df_filtered.columns else "N/A")
 
-# 2.1 Filtro de Data
-st.sidebar.subheader("Filtro de Data")
+# --- Filtros na Sidebar ---
+st.sidebar.header("🔍 Filtros")
 
-# Determina a data mínima e máxima no conjunto de dados, considerando ambas as colunas de data
-all_dates = pd.Series(dtype='datetime64[ns]')
-if 'data_realizada' in df_visitas_completas.columns:
-    all_dates = pd.concat([all_dates, df_visitas_completas['data_realizada'].dropna()])
-if 'data_planejada' in df_visitas_completas.columns:
-    all_dates = pd.concat([all_dates, df_visitas_completas['data_planejada'].dropna()])
-
-# Define o intervalo padrão (ex: últimos 365 dias ou todo o período disponível)
-if not all_dates.empty:
-    min_available_date = all_dates.min().date()
-    max_available_date = all_dates.max().date()
-else: # Fallback se não houver datas válidas
-    min_available_date = date.today() - timedelta(days=365)
-    max_available_date = date.today()
-
-# Define o valor padrão do filtro para os últimos 30 dias (ou o período disponível, se menor)
-default_start_date = max(min_available_date, date.today() - timedelta(days=30))
-default_end_date = max_available_date
-
-date_range = st.sidebar.date_input(
-    "Selecione o Intervalo de Datas:",
-    value=(default_start_date, default_end_date), # Valor inicial do filtro
-    min_value=min_available_date, # Data mínima que pode ser selecionada
-    max_value=max_available_date # Data máxima que pode ser selecionada
-)
-
-# Extrai as datas de início e fim do filtro
-start_date = date_range[0]
-end_date = date_range[1] if len(date_range) > 1 else date_range[0] # Se apenas uma data for selecionada, usa-a como fim
-
-# 2.2 Filtro de Cliente
-st.sidebar.subheader("Filtrar por Cliente")
-
-clientes_map = df_clientes_base[['cliente', 'codigo_cliente']].drop_duplicates().set_index('cliente').to_dict()['codigo_cliente']
-clientes_nomes = ['Todos'] + sorted(df_clientes_base['cliente'].dropna().unique())
-
-selected_cliente_nome = st.sidebar.selectbox(
-    "Selecione o Cliente:",
-    options=clientes_nomes
-)
-
-selected_cliente_codigo = None
-if selected_cliente_nome != 'Todos' and selected_cliente_nome in clientes_map:
-    selected_cliente_codigo = clientes_map.get(selected_cliente_nome)
-
-st.sidebar.info(f"Código do Cliente: **{selected_cliente_codigo if selected_cliente_codigo else 'N/A'}**")
-
-# 2.3 Filtro de Responsável
-st.sidebar.subheader("Filtrar por Responsável")
-
-responsaveis_map = df_clientes_base[['responsavel', 'codigo_responsavel']].drop_duplicates().set_index('responsavel').to_dict()['codigo_responsavel']
-responsaveis_nomes = ['Todos'] + sorted(df_clientes_base['responsavel'].dropna().unique())
-
-selected_responsavel_nome = st.sidebar.selectbox(
-    "Selecione o Responsável:",
-    options=responsaveis_nomes
-)
-
-selected_responsavel_codigo = None
-if selected_responsavel_nome != 'Todos' and selected_responsavel_nome in responsaveis_map:
-    selected_responsavel_codigo = responsaveis_map.get(selected_responsavel_nome)
-
-st.sidebar.info(f"Código do Responsável: **{selected_responsavel_codigo if selected_responsavel_codigo else 'N/A'}**")
-
-# --- 3. Aplicação dos Filtros nos Dados (Criação de df_filtrado) ---
-
-df_filtrado = df_visitas_completas.copy()
-
-# Aplica filtro de Cliente
-if selected_cliente_codigo:
-    if 'codigo_cliente' in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado['codigo_cliente'] == selected_cliente_codigo]
-
-# Aplica filtro de Responsável
-if selected_responsavel_codigo:
-    if 'codigo_responsavel' in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado['codigo_responsavel'] == selected_responsavel_codigo]
-
-# --- LÓGICA DE FILTRO DE DATA ATUALIZADA ---
-# Converte as datas de filtro para pd.Timestamp, garantindo que o dia final seja inclusivo
-start_ts = pd.Timestamp(start_date)
-end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) # Adiciona 1 dia para incluir todo o dia final
-
-# Inicializa uma máscara booleana vazia para aplicar o filtro de data
-date_mask = pd.Series([False] * len(df_filtrado), index=df_filtrado.index)
-
-# Verifica se a coluna 'data_realizada' existe e contribui para a máscara
-if 'data_realizada' in df_filtrado.columns:
-    # Registros onde data_realizada está dentro do intervalo
-    date_mask = date_mask | ((df_filtrado['data_realizada'] >= start_ts) & (df_filtrado['data_realizada'] < end_ts))
-
-# Verifica se a coluna 'data_planejada' existe e contribui para a máscara
-if 'data_planejada' in df_filtrado.columns:
-    # Registros onde data_planejada está dentro do intervalo
-    date_mask = date_mask | ((df_filtrado['data_planejada'] >= start_ts) & (df_filtrado['data_planejada'] < end_ts))
-
-# Aplica a máscara de data ao DataFrame filtrado
-df_filtrado = df_filtrado[date_mask]
-# --- FIM DA LÓGICA DE FILTRO DE DATA ATUALIZADA ---
-
-
-# Verifica se o DataFrame filtrado está vazio após os filtros
-if df_filtrado.empty:
-    st.warning("Nenhum dado encontrado para os filtros selecionados.")
-    st.stop()
-
-# --- 4. Exibição do Dashboard (KPIs, Tabelas e Gráficos) ---
-
-st.title("Painel de Acompanhamento de Visitas")
-
-# --------------------------------------------------------
-# 1. Visitas Planejadas Próximos 15 Dias e Foco Principal
-# --------------------------------------------------------
-
-st.header("Visitas Planejadas (Próximos 15 Dias)")
-
-if 'data_planejada' in df_filtrado.columns and 'foco' in df_filtrado.columns:
-    
-    hoje = pd.to_datetime(date.today())
-    quinze_dias_futuro = hoje + timedelta(days=15)
-
-    df_proximos_15 = df_filtrado[
-        (df_filtrado['data_planejada'] >= hoje) & 
-        (df_filtrado['data_planejada'] <= quinze_dias_futuro) &
-        (df_filtrado['status'] == 'Planejado') 
-    ]
-
-    total_visitas_15dias = len(df_proximos_15)
-
-    foco_principal_15dias = "N/A"
-    if not df_proximos_15.empty:
-        # ATUALIZAÇÃO AQUI: Verifica se mode() retorna algo antes de acessar o índice [0]
-        foco_principal_mode_result = df_proximos_15['foco'].mode()
-        if not foco_principal_mode_result.empty:
-            foco_principal_15dias = foco_principal_mode_result[0]
-        else:
-            foco_principal_15dias = "Nenhum Foco Definido" # Mensagem alternativa
-
-    col_v15_1, col_v15_2 = st.columns(2)
-    col_v15_1.metric("Visitas Planejadas (Próximos 15 Dias)", f"{total_visitas_15dias:,}")
-    col_v15_2.metric("Foco Principal (Próximos 15 Dias)", foco_principal_15dias)
-
-    if not df_proximos_15.empty:
-        st.subheader("Detalhes das Visitas Planejadas (Próximos 15 Dias)")
-        st.dataframe(df_proximos_15[['cliente', 'responsavel', 'data_planejada', 'foco']], use_container_width=True)
-    
+# Filtro por agrônomo
+if 'responsavel' in df_filtered.columns:
+    agronomos = st.sidebar.multiselect(
+        "Selecione os Agrônomos:",
+        options=df_filtered['responsavel'].unique(),
+        default=list(df_filtered['responsavel'].unique()) # Garante que o default é uma lista
+    )
+    df_filtered = df_filtered[df_filtered['responsavel'].isin(agronomos)]
 else:
-    st.warning("Colunas 'data_planejada' ou 'foco' ausentes para cálculo dos próximos 15 dias.")
+    st.sidebar.warning("Coluna 'responsavel' não encontrada para filtro de agrônomos.")
+    agronomos = [] # Garante que a variável exista para evitar erros
+
+# Filtro por período (para data_realizada)
+if 'data_realizada' in df_filtered.columns and not df_filtered['data_realizada'].isna().all():
+    min_date = df_filtered['data_realizada'].min()
+    max_date = df_filtered['data_realizada'].max()
+    if pd.notna(min_date) and pd.notna(max_date):
+        date_range = st.sidebar.date_input(
+            "Período de Análise (Data Realizada):",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date
+        )
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            df_filtered = df_filtered[
+                (df_filtered['data_realizada'] >= pd.to_datetime(start_date)) &
+                (df_filtered['data_realizada'] <= pd.to_datetime(end_date))
+            ]
+        elif len(date_range) == 1:
+            start_date = date_range[0]
+            df_filtered = df_filtered[df_filtered['data_realizada'] >= pd.to_datetime(start_date)]
+    else:
+        st.sidebar.info("Não há dados de 'data_realizada' válidos para filtrar por período.")
+else:
+    st.sidebar.info("Coluna 'data_realizada' não encontrada ou sem dados válidos para filtro de período.")
 
 
-# --------------------------------------------------------
-# 2. Tabela de Visitas por Cliente (Planejadas, Realizadas, Total)
-# --------------------------------------------------------
+# --- KPIs de Acompanhamento ---
+st.subheader('📊 KPIs de Acompanhamento')
 
-st.header("Visitas por Cliente")
+# Separar visitas realizadas e planejadas (com cópia para evitar SettingWithCopyWarning)
+if 'status' in df_filtered.columns:
+    visitas_realizadas = df_filtered[df_filtered['status'].str.lower() == 'realizado'].copy()
+    visitas_planejadas = df_filtered[df_filtered['status'].str.lower() == 'planejado'].copy()
+else:
+    st.warning("Coluna 'status' não encontrada. KPIs de status e frequência podem ser afetados.")
+    visitas_realizadas = pd.DataFrame()
+    visitas_planejadas = pd.DataFrame()
 
-if 'status' in df_filtrado.columns and 'cliente' in df_filtrado.columns:
+# KPI 1: Número de Visitas por Agrônomo
+st.subheader('1. 👥 Número de Visitas por Agrônomo')
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("**Visitas Realizadas**")
+    if not visitas_realizadas.empty and 'responsavel' in visitas_realizadas.columns:
+        visitas_por_agronomo_real = visitas_realizadas['responsavel'].value_counts().reset_index()
+        visitas_por_agronomo_real.columns = ['Agrônomo', 'Visitas Realizadas']
+        
+        fig_real = px.bar(visitas_por_agronomo_real,
+                          x='Agrônomo', y='Visitas Realizadas',
+                          title="Visitas Realizadas por Agrônomo",
+                          color='Visitas Realizadas',
+                          color_continuous_scale='Greens')
+        st.plotly_chart(fig_real, use_container_width=True)
+        st.dataframe(visitas_por_agronomo_real, use_container_width=True)
+    else:
+        st.info("Nenhuma visita realizada encontrada para os filtros aplicados ou coluna 'responsavel' ausente.")
+
+with col2:
+    st.markdown("**Visitas Planejadas**")
+    if not visitas_planejadas.empty and 'responsavel' in visitas_planejadas.columns:
+        visitas_por_agronomo_plan = visitas_planejadas['responsavel'].value_counts().reset_index()
+        visitas_por_agronomo_plan.columns = ['Agrônomo', 'Visitas Planejadas']
+        
+        fig_plan = px.bar(visitas_por_agronomo_plan,
+                          x='Agrônomo', y='Visitas Planejadas',
+                          title="Visitas Planejadas por Agrônomo",
+                          color='Visitas Planejadas',
+                          color_continuous_scale='Blues')
+        st.plotly_chart(fig_plan, use_container_width=True)
+        st.dataframe(visitas_por_agronomo_plan, use_container_width=True)
+    else:
+        st.info("Nenhuma visita planejada encontrada para os filtros aplicados ou coluna 'responsavel' ausente.")
+
+# KPI 2: Status das Visitas
+st.subheader('2. 📈 Status das Visitas')
+if 'status' in df_filtered.columns:
+    status_counts = df_filtered['status'].value_counts().reset_index()
+    status_counts.columns = ['Status', 'Quantidade']
     
-    visitas_pivot = df_filtrado.pivot_table(
-        index='cliente',
-        columns='status',
-        values='codigo_cliente', 
-        aggfunc='count',
-        fill_value=0
+    col1, col2 = st.columns(2)
+    with col1:
+        fig_status = px.pie(status_counts, values='Quantidade', names='Status',
+                            title="Distribuição por Status das Visitas")
+        st.plotly_chart(fig_status, use_container_width=True)
+    
+    with col2:
+        st.dataframe(status_counts, use_container_width=True)
+else:
+    st.info("Coluna 'status' não encontrada para análise de status das visitas.")
+
+# KPI 3: Frequência de Visitas por Cliente
+st.subheader('3. 🎯 Frequência de Visitas por Cliente')
+if not visitas_realizadas.empty and 'cliente' in visitas_realizadas.columns:
+    freq_clientes = visitas_realizadas['cliente'].value_counts().reset_index()
+    freq_clientes.columns = ['Cliente', 'Número de Visitas']
+    
+    freq_clientes['Categoria'] = freq_clientes['Número de Visitas'].apply(
+        lambda x: 'Alta Frequência (3+)' if x >= 3
+                       else 'Média Frequência (2)' if x == 2
+                       else 'Baixa Frequência (1)'
     )
     
-    visitas_pivot['Total_Visitas'] = visitas_pivot.sum(axis=1)
-    visitas_pivot = visitas_pivot.sort_values(by='Total_Visitas', ascending=False)
-
-    st.dataframe(visitas_pivot, use_container_width=True)
+    categoria_counts = freq_clientes['Categoria'].value_counts().reset_index()
+    categoria_counts.columns = ['Categoria', 'Quantidade de Clientes']
     
+    col1, col2 = st.columns(2)
+    with col1:
+        fig_freq = px.bar(categoria_counts,
+                          x='Categoria', y='Quantidade de Clientes',
+                          title="Clientes por Categoria de Frequência",
+                          color='Quantidade de Clientes',
+                          color_continuous_scale='Oranges')
+        st.plotly_chart(fig_freq, use_container_width=True)
+    
+    with col2:
+        st.dataframe(categoria_counts, use_container_width=True)
+    
+    st.subheader('🏆 Top 10 Clientes Mais Visitados')
+    top_clientes = freq_clientes.head(10).sort_values(by='Número de Visitas', ascending=True) # Ordena para o gráfico de barras horizontais
+    fig_top = px.bar(top_clientes,
+                     x='Número de Visitas', y='Cliente',
+                     title="Top 10 Clientes por Número de Visitas",
+                     orientation='h',
+                     color='Número de Visitas',
+                     color_continuous_scale='Viridis')
+    fig_top.update_layout(height=500)
+    st.plotly_chart(fig_top, use_container_width=True)
 else:
-    st.warning("Colunas 'status' ou 'cliente' ausentes para a tabela de visitas por cliente.")
+    st.info("Nenhum dado de visitas realizadas ou coluna 'cliente' para analisar frequência de visitas.")
 
-
-# --------------------------------------------------------
-# 3. Clientes Únicos Visitados (Em Tabela)
-# --------------------------------------------------------
-
-st.header("Clientes Únicos Visitados")
-
-if 'cliente' in df_filtrado.columns:
-    clientes_unicos_df = pd.DataFrame(df_filtrado['cliente'].unique(), columns=['Cliente'])
+# KPI 4: Clientes Inativos
+st.subheader('4. ⚠️ Análise de Clientes Inativos')
+if 'cliente' in df_filtered.columns:
+    todos_clientes = set(df_filtered['cliente'].unique())
+    clientes_visitados = set(visitas_realizadas['cliente'].unique()) if not visitas_realizadas.empty else set()
+    clientes_nao_visitados = todos_clientes - clientes_visitados
     
-    st.dataframe(clientes_unicos_df, use_container_width=True)
-else:
-    st.warning("Coluna 'cliente' ausente para a lista de clientes únicos.")
-
-# --------------------------------------------------------
-# 4. Total de Visitas Realizadas por Tipo de Foco
-# --------------------------------------------------------
-
-st.header("Visitas Realizadas por Foco")
-
-if 'foco' in df_filtrado.columns and 'status' in df_filtrado.columns:
-    df_realizadas = df_filtrado[df_filtrado['status'] == 'Realizado'].copy()
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total de Clientes (Filtrados)", len(todos_clientes))
+    with col2:
+        percent_visitados = f"{len(clientes_visitados)/len(todos_clientes)*100:.1f}%" if len(todos_clientes) > 0 else "0.0%"
+        st.metric("Clientes Visitados", len(clientes_visitados),
+                        delta=percent_visitados)
+    with col3:
+        percent_nao_visitados = f"{len(clientes_nao_visitados)/len(todos_clientes)*100:.1f}%" if len(todos_clientes) > 0 else "0.0%"
+        st.metric("Clientes NÃO Visitados", len(clientes_nao_visitados),
+                        delta=percent_nao_visitados)
     
-    visitas_foco = df_realizadas['foco'].value_counts().reset_index()
-    visitas_foco.columns = ['Foco', 'Total Visitas Realizadas']
-
-    st.dataframe(visitas_foco, use_container_width=True)
-else:
-    st.warning("Colunas 'foco' ou 'status' ausentes para o resumo de visitas realizadas por foco.")
-
-# --------------------------------------------------------
-# 5. Gráfico comparando Status de Visitas pelo Total
-# --------------------------------------------------------
-
-st.header("Comparação de Status de Visitas")
-
-if 'status' in df_filtrado.columns:
-    status_counts = df_filtrado['status'].value_counts().reset_index()
-    status_counts.columns = ['Status', 'Total Visitas']
-    
-    fig_status = px.bar(status_counts, 
-                        x='Status', 
-                        y='Total Visitas', 
-                        title='Total de Visitas por Status',
-                        color='Status', 
-                        text='Total Visitas') 
-    
-    st.plotly_chart(fig_status, use_container_width=True)
-else:
-    st.warning("Coluna 'status' ausente para o gráfico de comparação.")
-
-
-# --------------------------------------------------------
-# 6. Tabela: Clientes e Quantidade de Dias da Última Visita Realizada
-# --------------------------------------------------------
-
-st.header("Dias Desde a Última Visita Realizada")
-
-if 'data_realizada' in df_filtrado.columns and 'cliente' in df_filtrado.columns and 'status' in df_filtrado.columns:
-    
-    df_realizadas = df_filtrado[
-        (df_filtrado['status'] == 'Realizado') & 
-        (df_filtrado['data_realizada'].notna())
-    ].copy()
-    
-    if not df_realizadas.empty:
-        ultima_visita = df_realizadas.groupby('cliente')['data_realizada'].max().reset_index()
-        
-        hoje = pd.to_datetime(date.today())
-        ultima_visita['Dias_Desde_Ultima_Visita'] = (hoje - ultima_visita['data_realizada']).dt.days
-
-        ultima_visita = ultima_visita.sort_values(by='Dias_Desde_Ultima_Visita', ascending=False)
-
-        st.dataframe(ultima_visita[['cliente', 'data_realizada', 'Dias_Desde_Ultima_Visita']], use_container_width=True)
+    if clientes_nao_visitados:
+        st.warning(f"⚠️ **ATENÇÃO**: {len(clientes_nao_visitados)} clientes não receberam nenhuma visita realizada para os filtros aplicados!")
+        with st.expander("Ver lista de clientes não visitados"):
+            clientes_nao_visitados_df = pd.DataFrame({
+                'Cliente Não Visitado': sorted(list(clientes_nao_visitados))
+            })
+            st.dataframe(clientes_nao_visitados_df, use_container_width=True)
     else:
-        st.info("Nenhuma visita 'Realizada' encontrada para calcular os dias desde a última visita.")
-
+        st.info("Todos os clientes nos filtros aplicados receberam pelo menos uma visita realizada.")
 else:
-    st.warning("Colunas 'data_realizada', 'cliente' ou 'status' ausentes para calcular dias desde a última visita.")
+    st.info("Coluna 'cliente' não encontrada para análise de clientes inativos.")
 
-
-# --------------------------------------------------------
-# 7. Tabela: Clientes, meta_dias e Status (Atrasado/Dentro do Prazo)
-# --------------------------------------------------------
-
-st.header("Status de Visitas Baseado em Meta de Dias")
-
-if 'meta_dias' in df_filtrado.columns and 'data_realizada' in df_filtrado.columns and 'cliente' in df_filtrado.columns:
+# KPI 5: Análise Temporal das Visitas
+st.subheader('5. 📅 Análise Temporal das Visitas')
+if not visitas_realizadas.empty and 'data_realizada' in visitas_realizadas.columns:
+    visitas_realizadas['mes_ano'] = visitas_realizadas['data_realizada'].dt.to_period('M')
+    visitas_por_mes = visitas_realizadas['mes_ano'].value_counts().sort_index().reset_index()
+    visitas_por_mes.columns = ['Mês', 'Número de Visitas']
+    visitas_por_mes['Mês'] = visitas_por_mes['Mês'].astype(str)
     
-    df_realizadas = df_filtrado[
-        (df_filtrado['status'] == 'Realizado') & 
-        (df_filtrado['data_realizada'].notna())
-    ].copy()
+    fig_temporal = px.line(visitas_por_mes,
+                          x='Mês', y='Número de Visitas',
+                          title="Evolução das Visitas Realizadas por Mês",
+                          markers=True)
+    st.plotly_chart(fig_temporal, use_container_width=True)
+else:
+    st.info("Nenhum dado de visitas realizadas ou coluna 'data_realizada' para análise temporal.")
+
+# KPI 6: Análise de Cumprimento de Meta de Dias
+st.subheader('6. 🎯 Análise de Cumprimento de Meta de Dias')
+if 'dias_sem' in df_filtered.columns and 'meta_dias' in df_filtered.columns:
+    visitas_com_dias = visitas_realizadas.dropna(subset=['dias_sem', 'meta_dias']).copy()
+    visitas_com_dias['dias_sem'] = pd.to_numeric(visitas_com_dias['dias_sem'], errors='coerce')
+    visitas_com_dias['meta_dias'] = pd.to_numeric(visitas_com_dias['meta_dias'], errors='coerce')
+    visitas_com_dias = visitas_com_dias.dropna(subset=['dias_sem', 'meta_dias'])
     
-    if not df_realizadas.empty:
-        ultima_visita = df_realizadas.groupby('cliente')['data_realizada'].max().reset_index()
+    if not visitas_com_dias.empty:
+        visitas_com_dias['dentro_meta'] = visitas_com_dias['dias_sem'] <= visitas_com_dias['meta_dias']
         
-        clientes_metas = df_filtrado[['cliente', 'meta_dias']].drop_duplicates(subset='cliente', keep='first')
+        resumo_meta = visitas_com_dias.groupby('responsavel').agg(
+            Total_Visitas=('dentro_meta', 'count'),
+            Visitas_Dentro_Meta=('dentro_meta', 'sum'),
+            Media_Dias_Sem_Visita=('dias_sem', 'mean'),
+            Meta_Dias=('meta_dias', 'first')
+        ).round(1).reset_index()
         
-        clientes_com_metas = pd.merge(ultima_visita, 
-                                      clientes_metas, 
-                                      on='cliente', 
-                                      how='left')
+        resumo_meta.columns = ['Agrônomo', 'Total Visitas', 'Visitas Dentro da Meta', 'Média Dias Sem Visita', 'Meta Dias']
+        resumo_meta['% Dentro da Meta'] = (resumo_meta['Visitas Dentro da Meta'] / resumo_meta['Total Visitas'] * 100).fillna(0).round(1)
         
-        hoje = pd.to_datetime(date.today())
-        clientes_com_metas['Dias_Desde_Ultima_Visita'] = (hoje - clientes_com_metas['data_realizada']).dt.days
+        st.dataframe(resumo_meta, use_container_width=True)
         
-        clientes_com_metas['Status_Visita'] = clientes_com_metas.apply(
-            lambda row: "Atrasado" if pd.notna(row['meta_dias']) and row['Dias_Desde_Ultima_Visita'] > row['meta_dias'] else "Dentro do Prazo",
-            axis=1
-        )
-        
-        st.dataframe(clientes_com_metas[['cliente', 'meta_dias', 'Dias_Desde_Ultima_Visita', 'Status_Visita']], use_container_width=True)
-        
+        fig_meta = px.bar(resumo_meta,
+                          x='Agrônomo', y='% Dentro da Meta',
+                          title="% de Visitas Dentro da Meta por Agrônomo",
+                          color='% Dentro da Meta',
+                          color_continuous_scale='RdYlGn')
+        fig_meta.add_hline(y=80, line_dash="dash", line_color="red",
+                            annotation_text="Meta 80%")
+        st.plotly_chart(fig_meta, use_container_width=True)
     else:
-        st.info("Nenhuma visita 'Realizada' encontrada para calcular o status baseado na meta de dias.")
-
+        st.info("Nenhum dado de visitas realizadas com 'dias_sem' e 'meta_dias' válidos para esta análise.")
 else:
-    st.warning("Colunas 'meta_dias', 'data_realizada' ou 'cliente' ausentes para a tabela de status de visitas.")
+    st.info("Colunas 'dias_sem' ou 'meta_dias' não encontradas para análise de meta de dias.")
 
-# --------------------------------------------------------
-# 8. Clientes da base dClientes que ainda não foram visitados (AGORA COM FILTRO DE RESPONSÁVEL)
-# --------------------------------------------------------
+# Seção de dados brutos
+st.subheader('📋 Dados Detalhados')
+with st.expander("Ver dados filtrados (resultado do merge)"):
+    st.dataframe(df_filtered, use_container_width=True)
 
-st.header("Clientes Não Visitados (Base dClientes)")
-
-# Verifica se as colunas essenciais existem antes de prosseguir
-if 'cliente' in df_clientes_base.columns and \
-   'cliente' in df_visitas_completas.columns and \
-   'codigo_responsavel' in df_clientes_base.columns and \
-   'codigo_responsavel' in df_visitas_completas.columns: # Adicionado verificação para visitas também
-
-    # Filtra a base de clientes pelo responsável selecionado (se houver)
-    df_clientes_para_nao_visitados = df_clientes_base.copy()
-    if selected_responsavel_codigo:
-        df_clientes_para_nao_visitados = df_clientes_para_nao_visitados[
-            df_clientes_para_nao_visitados['codigo_responsavel'] == selected_responsavel_codigo
-        ]
-    todos_clientes_filtrados = df_clientes_para_nao_visitados['cliente'].unique()
-
-    # Filtra as visitas (completas) pelo responsável selecionado (se houver) para identificar quem FOI visitado
-    df_visitas_para_nao_visitados = df_visitas_completas.copy()
-    if selected_responsavel_codigo:
-        df_visitas_para_nao_visitados = df_visitas_para_nao_visitados[
-            df_visitas_para_nao_visitados['codigo_responsavel'] == selected_responsavel_codigo
-        ]
-    clientes_visitados_filtrados = df_visitas_para_nao_visitados['cliente'].unique()
-
-
-    # Calcula a diferença: clientes na base do responsável que não foram visitados por ele
-    clientes_nao_visitados_result = set(todos_clientes_filtrados) - set(clientes_visitados_filtrados)
-
-    if clientes_nao_visitados_result:
-        # Cria um DataFrame dos clientes não visitados
-        df_nao_visitados = pd.DataFrame(list(clientes_nao_visitados_result), columns=['Cliente Não Visitado'])
-
-        # Adiciona informações do responsável e código do cliente para contexto
-        df_nao_visitados = pd.merge(df_nao_visitados,
-                                    df_clientes_para_nao_visitados[['cliente', 'responsavel', 'codigo_responsavel', 'codigo_cliente']].drop_duplicates(),
-                                    left_on='Cliente Não Visitado',
-                                    right_on='cliente',
-                                    how='left').drop(columns='cliente')
-
-        st.subheader(f"Total de Clientes Não Visitados (para o Responsável selecionado): {len(df_nao_visitados)}")
-        st.dataframe(df_nao_visitados, use_container_width=True)
-    else:
-        st.info("Todos os clientes para o Responsável selecionado já foram visitados.")
-
-else:
-    st.warning("Colunas essenciais (cliente, codigo_responsavel) ausentes em uma das bases de dados para identificar clientes não visitados ou filtrar por responsável.")
+# Download dos dados filtrados
+csv = df_filtered.to_csv(index=False).encode('utf-8')
+st.download_button(
+    label="📥 Download dados filtrados (CSV)",
+    data=csv,
+    file_name=f'dados_dashboard_filtrados_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+    mime='text/csv'
+)
